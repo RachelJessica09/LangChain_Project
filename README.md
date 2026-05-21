@@ -6,6 +6,8 @@ A simple Python chatbot project that uses LangChain and OpenAI to maintain conve
 
 - Interactive command-line chatbot
 - Conversation memory using LangChain `ConversationBufferMemory`
+- Local fallback mode when API is unavailable
+- Remembers user information (name, location, profession, birth date, favorites)
 - Easy setup with `.env` support
 
 ## Requirements
@@ -46,3 +48,4 @@ python main.py
 - Type a message and press Enter to chat.
 - Type `history` to print the conversation history.
 - Type `exit` or `quit` to stop.
+- The bot remembers your personal details and answers questions about them.
