@@ -1,3 +1,6 @@
-langchain==0.0.303
-openai>=1.0.0
-python-dotenv>=1.0.0
+# langchain==0.0.303
+# python-dotenv>=1.0.0
+# huggingface-hub>=0.16.4
+# huggingface-hub>=0.16.0
+llama-cpp-python
+huggingface_hub

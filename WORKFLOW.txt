@@ -1,0 +1,382 @@
+================================================================================
+                    AI CHATBOT WITH MEMORY — WORKFLOW DOCUMENTATION
+================================================================================
+
+Project  : Local AI Chatbot with Persistent Memory
+File     : main.py
+Language : Python 3.12
+Author   : (Your Name)
+Date     : 2026
+
+================================================================================
+1. PROJECT OVERVIEW
+================================================================================
+
+This project is a fully local AI chatbot that runs on your own machine without
+any internet connection after the model is downloaded. It remembers personal
+facts you share during the conversation — your name, hobbies, family details,
+preferences, weekend activities, and anything else you mention — and uses that
+memory to give personalized, context-aware responses.
+
+Key features:
+  - Runs 100% offline after first download
+  - No API keys or cloud services required during chat
+  - AI-driven memory (no hardcoded keyword patterns)
+  - Anti-hallucination: only remembers what you explicitly say
+  - Full conversation history maintained within each session
+  - Memory viewable at any time with the 'memory' command
+
+================================================================================
+2. MODEL CHOSEN — Mistral-7B-Instruct-v0.1 (GGUF Q2_K)
+================================================================================
+
+Model repo : TheBloke/Mistral-7B-Instruct-v0.1-GGUF
+Model file : mistral-7b-instruct-v0.1.Q2_K.gguf
+Size       : ~3.08 GB
+Format     : GGUF (4-bit quantized)
+
+--- What is Mistral-7B? ---
+
+Mistral-7B is a large language model developed by Mistral AI (France) released
+in 2023. Despite having only 7 billion parameters, it outperforms many larger
+models including Meta's LLaMA-2-13B on most benchmarks. It was designed to be
+highly efficient — achieving strong performance with fewer parameters by using
+two key architectural innovations:
+
+  1. Grouped Query Attention (GQA)
+     Instead of computing a separate attention head for every query, GQA groups
+     queries together and shares key-value pairs across them. This makes the
+     model significantly faster during inference (generating responses) without
+     losing much accuracy. It reduces memory usage and speeds up generation
+     especially on CPU.
+
+  2. Sliding Window Attention (SWA)
+     Instead of attending to every token in the context window (which gets very
+     slow for long inputs), each token only attends to a window of recent tokens.
+     This makes processing long conversations much faster and allows the model to
+     handle a 4096-token context window efficiently even on CPU.
+
+--- Why the Instruct version? ---
+
+Mistral-7B comes in two flavours:
+  - Base model   : predicts the next word, not useful for conversations
+  - Instruct model : fine-tuned with instruction-following data using a technique
+                     called Supervised Fine-Tuning (SFT) + RLHF (Reinforcement
+                     Learning from Human Feedback)
+
+The Instruct version understands commands like "extract facts from this message
+and return JSON" or "answer in 1-2 sentences only", which is essential for
+this project's two-prompt architecture.
+
+--- Why the GGUF Q2_K quantized version? ---
+
+The original Mistral-7B in full float32 precision would be ~28 GB — impossible
+to run on a normal laptop CPU. GGUF quantization compresses it:
+
+  Quantization  |  Size   |  Quality loss  |  Speed on CPU
+  --------------|---------|----------------|----------------
+  Q8_0          |  7.7 GB |  Nearly none   |  Slow
+  Q4_K_M        |  4.4 GB |  Very small    |  Moderate
+  Q2_K          |  3.1 GB |  Noticeable    |  Fastest on CPU
+
+Q2_K was chosen because:
+  - It fits comfortably in RAM on most laptops (8GB+ RAM)
+  - It is the fastest to generate responses on CPU
+  - For a chatbot with memory, the quality trade-off is acceptable — the model
+    still follows instructions, extracts facts, and answers questions correctly
+
+--- Why not other models? ---
+
+Model              | Why it was NOT used
+-------------------|-------------------------------------------------------
+DialoGPT (medium)  | Trained only on Reddit chit-chat. Cannot follow
+                   | instructions, cannot answer factual questions, cannot
+                   | recall injected memory context. Completely wrong tool.
+                   |
+TinyLlama-1.1B     | Too small (1.1B params) to reliably follow instructions.
+                   | It leaked system prompt rules into responses, ignored
+                   | memory, and hallucinated answers. Not suitable.
+                   |
+Phi-2 (2.7B)       | Better than TinyLlama but runs in full float32 on CPU —
+                   | 2.7GB but extremely slow (30-60 seconds per reply).
+                   | No GGUF version available at the time. Discarded.
+                   |
+Phi-3-mini (3.8B)  | Downloaded 7.6GB total, too heavy for CPU. Hung during
+                   | generation. Printed flash-attention warnings instead of
+                   | responses. Requires GPU to run properly.
+                   |
+GPT-4 / Claude API | Requires internet connection and paid API keys. This
+                   | project is designed to run fully offline.
+                   |
+Zephyr-7B (API)    | Tried via HuggingFace Inference API but the machine's
+                   | network/firewall blocked api-inference.huggingface.co.
+                   | DNS resolution failed completely.
+
+Mistral-7B-Instruct Q2_K via ctransformers is the best balance of:
+  quality + speed + size + offline capability + instruction following
+
+================================================================================
+3. RUNTIME LIBRARY — ctransformers
+================================================================================
+
+Library : ctransformers
+Install : pip install ctransformers
+
+ctransformers is a Python library that loads and runs GGUF quantized models
+directly on CPU using the llama.cpp backend under the hood. It was chosen over
+alternatives for the following reasons:
+
+  vs llama-cpp-python:
+    llama-cpp-python has deeply nested file paths inside its source package
+    (256+ characters long). On Windows, this causes an OSError during pip
+    install because Windows has a 260-character path limit. Even with temp
+    directory redirects, it could not be installed. ctransformers is distributed
+    as a pre-built binary wheel — no source extraction, no long paths, installs
+    cleanly every time.
+
+  vs transformers + torch (PyTorch):
+    The transformers library loads models in full float32 or float16 precision.
+    Mistral-7B in float32 = ~28GB RAM. Even in float16 = ~14GB. Neither is
+    feasible on a standard laptop. Response generation would take several minutes
+    per message. ctransformers with GGUF Q2_K uses only ~3GB RAM and generates
+    responses in 5-15 seconds on CPU.
+
+  vs running a local server (Ollama, LM Studio):
+    Those tools require installing a separate application. ctransformers is a
+    pure Python library — no extra software, no server process, just pip install
+    and import.
+
+================================================================================
+4. HOW THE MEMORY SYSTEM WORKS
+================================================================================
+
+The memory system uses two separate AI calls per user message — no hardcoded
+keyword patterns or regex rules. This means ANY fact phrased in ANY way gets
+captured automatically.
+
+--- Why no hardcoded patterns? ---
+
+Earlier versions used regex like:
+  r"my name is (.+)"
+  r"\bi like (.+)"
+
+This only worked for exact phrases. "Call me Jessica", "People know me as
+Jessica", "Jessica is my name" — all would be missed. Any new fact type
+(dad's name, weekend activity, favourite food) required manually adding a new
+pattern. It was rigid and broke easily.
+
+The AI-driven approach handles any phrasing automatically.
+
+--- Memory Extraction (Call 1) ---
+
+Every time the user sends a message, before generating a reply, the system
+makes a separate LLM call specifically for fact extraction.
+
+The extraction prompt uses:
+  1. Strict rules: "Extract ONLY facts EXPLICITLY stated. Do NOT infer or assume."
+  2. Few-shot examples: concrete examples of what returns JSON vs what returns {}
+  3. Output format: ONLY a valid JSON object, nothing else
+
+Example extraction results:
+  "I like dogs"                    → {"likes": "dogs"}
+  "my name is Jessica"             → {"name": "Jessica"}
+  "I play tennis on weekends"      → {"weekend_activity": "tennis"}
+  "I paint sometimes for fun"      → {"hobby": "painting"}
+  "my dad's name is Ramana"        → {"dad_name": "Ramana"}
+  "what is the weather today?"     → {}
+  "A LLM is a large language..."   → {}
+
+Facts are stored in a Python dictionary called `memory`. Keys are auto-generated
+by the model (snake_case) so any new category gets its own key automatically.
+
+--- Anti-Hallucination Design ---
+
+Earlier versions without strict extraction prompts caused the model to invent
+facts — if you said "I like dogs", it would also store "yoga", "sushi", "hiking"
+as if you had said them. This was fixed with two safeguards:
+
+  1. Extraction prompt explicitly says "Do NOT infer, assume, or add anything
+     not directly said" with negative examples showing {} for non-personal input.
+
+  2. Chat response prompt explicitly says "use ONLY the facts listed below —
+     never guess or invent. If a fact was not told to you, say you don't know."
+
+--- Memory Injection (Call 2) ---
+
+When generating the actual reply, all stored memory facts are injected into the
+system prompt in a structured block:
+
+  "Facts you know about the user:
+   - name: Jessica
+   - likes: dogs
+   - weekend_activity: tennis
+   - hobby: painting"
+
+This means the model always has the full picture of who the user is, regardless
+of how many messages ago they mentioned something.
+
+================================================================================
+5. HOW THE CONVERSATION HISTORY WORKS
+================================================================================
+
+In addition to the memory dict, the last 6 conversation turns (user + bot pairs)
+are included in every prompt. This gives the model short-term conversational
+context — it can refer back to what was just discussed without needing to store
+it as a long-term memory fact.
+
+Memory dict  = long-term facts (persists entire session)
+Chat history = short-term context (last 6 turns only, to keep prompt size small)
+
+The 6-turn limit prevents the prompt from growing too large and hitting the
+4096-token context window limit of the model.
+
+================================================================================
+6. PROMPT FORMAT — Mistral Instruct Template
+================================================================================
+
+Mistral-Instruct uses a specific prompt format with special tokens:
+
+  <s>[INST] system message [/INST] Understood.</s>
+  [INST] user message 1 [/INST] bot reply 1 </s>
+  [INST] user message 2 [/INST]
+
+Breaking this down:
+  <s>       = start of sequence token
+  [INST]    = start of user/instruction turn
+  [/INST]   = end of user turn, model generates after this
+  </s>      = end of sequence (separates turns)
+
+Using the correct prompt format is critical. Wrong formats cause the model to:
+  - Leak the system prompt into its response
+  - Ignore instructions
+  - Repeat the user's question instead of answering it
+
+The system message (containing memory facts and behaviour rules) is placed in
+the first turn and acknowledged with "Understood." so the model treats it as
+established context before the real conversation begins.
+
+================================================================================
+7. GENERATION PARAMETERS EXPLAINED
+================================================================================
+
+  context_length=4096
+    Maximum tokens the model can see at once (prompt + response combined).
+    4096 is Mistral's native context window. Going over this causes truncation.
+
+  max_new_tokens=512 (model load) / 200 (chat) / 100 (extraction)
+    Maximum tokens the model can generate per response. Lower limits for
+    extraction (100) force short JSON output. Chat replies capped at 200 to
+    keep answers concise.
+
+  temperature=0.3
+    Controls randomness. 0.0 = fully deterministic (same answer every time).
+    1.0 = very creative/random. 0.3 is low — keeps answers factual and
+    consistent, reduces hallucination. Good for an assistant that needs to
+    reliably recall stored facts.
+
+  repetition_penalty=1.1
+    Discourages the model from repeating the same words or phrases. Without
+    this, models sometimes loop and repeat sentences. 1.1 is a mild penalty.
+
+  threads=4
+    Number of CPU threads used for inference. Set to 4 to use multiple cores
+    and speed up generation. Can be increased on machines with more cores.
+
+================================================================================
+8. FULL MESSAGE FLOW (STEP BY STEP)
+================================================================================
+
+User types a message → Python reads it with input()
+        │
+        ▼
+Check for commands ('memory', 'clear', 'exit') → handle and skip AI if matched
+        │
+        ▼
+CALL 1 — extract_and_update_memory(user_input)
+  - Build extraction prompt with strict rules + few-shot examples
+  - Call Mistral with max_tokens=100
+  - Parse JSON from response
+  - Update memory dict with any new facts found
+  - If no facts or JSON parse fails → memory unchanged, silently continue
+        │
+        ▼
+CALL 2 — get_response(user_input)
+  - Build chat prompt:
+      * System section: behaviour rules + all memory facts
+      * History section: last 6 conversation turns
+      * Current user message
+  - Call Mistral with max_tokens=200
+  - Strip any leaked prompt tokens ([INST], </s>, [/INST])
+  - Return cleaned reply string
+        │
+        ▼
+Print reply → append (user_input, response) to chat_history → wait for next input
+
+================================================================================
+9. FILE STRUCTURE
+================================================================================
+
+LANGCHAIN_PROJECT/
+└── chatbot/
+    ├── main.py           ← Main chatbot script (all logic lives here)
+    ├── .env              ← Environment variables (HuggingFace token)
+    ├── requirements.txt  ← Python package dependencies
+    ├── WORKFLOW.txt      ← This file
+    ├── install.ps1       ← PowerShell install helper script
+    ├── README.md         ← Project readme
+    └── .venv/            ← Python virtual environment (local packages)
+
+Model cache (downloaded automatically, stored separately):
+  C:\Users\<username>\.cache\huggingface\hub\
+  └── models--TheBloke--Mistral-7B-Instruct-v0.1-GGUF/
+      └── mistral-7b-instruct-v0.1.Q2_K.gguf   (~3.08 GB)
+
+================================================================================
+10. DEPENDENCIES
+================================================================================
+
+  ctransformers    — Loads and runs GGUF quantized models on CPU
+  huggingface_hub  — Downloads model files from HuggingFace model hub
+
+Install command:
+  pip install ctransformers huggingface_hub
+
+The .venv folder contains these installed packages. If deleted, recreate with:
+  python -m venv .venv
+  .venv\Scripts\activate
+  pip install ctransformers huggingface_hub
+
+================================================================================
+11. COMMANDS DURING CHAT
+================================================================================
+
+  memory   → Print all currently stored facts about the user
+  clear    → Wipe conversation history (memory facts are kept)
+  exit     → Quit the chatbot
+  quit     → Quit the chatbot (same as exit)
+
+================================================================================
+12. LIMITATIONS
+================================================================================
+
+  - Response speed: 5-15 seconds per message on CPU (no GPU acceleration)
+  - Memory resets on restart: memory dict lives in RAM only, not saved to disk
+  - Q2_K quality: heavy quantization means occasional grammatical errors or
+    slightly off answers compared to the full-precision model
+  - Context limit: only last 6 conversation turns kept in prompt; very old
+    turns are dropped (though facts extracted from them stay in memory dict)
+  - Extraction may miss facts phrased in unusual ways on rare occasions
+
+================================================================================
+13. POSSIBLE FUTURE IMPROVEMENTS
+================================================================================
+
+  - Save memory to a JSON file on disk so it persists between sessions
+  - Add GPU support (set threads=0 and use gpu_layers parameter in ctransformers)
+  - Upgrade to Q4_K_M quantization for better response quality if RAM allows
+  - Add a web UI using Flask or Streamlit instead of terminal interface
+  - Allow the user to manually add or delete memory entries
+
+================================================================================
+END OF WORKFLOW DOCUMENTATION
+================================================================================

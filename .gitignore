@@ -1,10 +1,28 @@
-.env
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
-.Python
-env/
+# Virtual environment - never commit this
+.venv/
 venv/
-.idea/
+env/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Environment variables - contains secrets
+.env
+
+# HuggingFace model cache - huge files, not needed in repo
+*.gguf
+*.bin
+*.safetensors
+
+# pip cache
+pip-cache/
+tmp/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# VS Code
 .vscode/
